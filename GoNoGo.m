@@ -17,7 +17,7 @@ CedrusResponseBox('CloseAll');
 C.possibleCedrusPorts = {'/dev/cu.usbserial-000012FD', '/dev/cu.usbserial-000013FA', '/dev/cu.usbserial-142',  '/dev/cu.usbserial-141'}; % Check in terminal, 'ls /dev' 
 C.versionNum = 2;
 
-%% DECLARE CONSTANTS THAT MAY VARY
+%% DECLARE CONSTANTS THAT VARY ACCORDING TO RUN TYPE
 % There are 4 Practice Runs and unlimited Task Runs, 
 % but typically 6 are run
 if strcmp(testOrPracticeLetter, 'P') && runNum==1
