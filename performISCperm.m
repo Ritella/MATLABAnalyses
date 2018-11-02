@@ -1,431 +1,218 @@
-% Correlates subjects to each other, according to inter-subject correlation (ISC).
+% Performs inter-subject correlations (ISC) on fMRI data.
+% See https://www.ncbi.nlm.nih.gov/pubmed/15016991 (Hasson, 2004)
+% For each participant, every vertex timecourse is correlated to
+% the timecourse of that vertex in the leave-one-out group.
+% Pearson R values are then averaged across participants' for each vertex.
+% This code can either perform ISC analysis on empirical fMRI values
+% or it performs ISC analysis on empirical fMRI values that are  
+% first phase shuffled to create null data.
+% The latter is used to form a null distribution of R values, against which
+% the statistical significance of empirical R is assessed 
+% (i.e. a non-parametric, permutation analysis).
 
-function []=performISCperm(batch_num)
-clearvars -except batch_num
-addpath('/media/BednyDrobo/Tools/matlab/spm12');
-addpath('/opt/fsl/5.0.9/etc/matlab/');
+% Author: Rita Loiotile
+% August 2018
 
-%% DECLARE CONSTANTS
-movies={'phonecallhome'};
-groups={'S'};
-hemis={'lh'};
-mainDir='/media/BednyDrobo/Projects/GNGC/subReplace/crosscorr/preproc-12fwhm/movieReplace.feat/NIFTIs/hemiReplace.32k_fs_LR.surfed_data.func.nii.gz';
-groupDir='/media/BednyDrobo/Projects/GNGC/CrossCorr/isc/isc-12fwhm-perm-test/movieReplace.hemiReplace';
-%movies={'rest', 'backward', 'scramble', 'pieman', 'phonecallhome', 'hauntedhouse', 'undercoverwire'};
-%groups={'S', 'CB'};
-%hemis={'lh', 'rh'};
-%mainDir='/media/BednyDrobo/Projects/GNGC/subReplace/crosscorr/preproc-12fwhm/movieReplace.feat/NIFTIs/hemiReplace.32k_fs_LR.surfed_data.func.nii.gz';
-%groupDir='/media/BednyDrobo/Projects/GNGC/CrossCorr/isc/isc-12fwhm-perm/movieReplace.hemiReplace';
-subs = load('/media/BednyDrobo/Projects/GNGC/CrossCorr/subject_list.mat', 'subs');
-subs = subs.subs;
+function [] = performISC(server_name, batch_num) %#ok<FNDEF>
 
-tic;
-rng(batch_num+now); % seed the random number generator so that not all batches are the same
-%% START ANALYSIS
-for r=1:length(groups)
-    group=groups{r};
-    for i = 1:length(movies)
-        movie=movies{i};
-        for j=1:length(hemis)        
-            hemi=hemis{j};
-            thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{movie,hemi});
-            meanSubTC.(group).(movie).(hemi).count=[];
-            meanSubTC.(group).(movie).(hemi).value=[];
-            meanSubTC.(group).(movie).(hemi).sum=[];
-            theseSubs=subs.(movie).(group);
-            for k = 1:length(theseSubs)
-                sub=theseSubs{k};
-                subFile=mainDir;
-                subFile=regexprep(subFile,{'subReplace','movieReplace','hemiReplace'},{sub,movie,hemi}); 
-                %display(subFile);
-                subValue=read_avw(subFile);
-                subValue=subValue(:,:);
-                % find 0s and nans and mask out all associated timepoint
-                % for that vertex
-                nonNullCount=~isnan(subValue(:,:)) .* ~(subValue(:,:)==0);
-                subMask = (sum(nonNullCount,2) == size(nonNullCount, 2));
-                subMask = repmat(subMask, [1 size(nonNullCount,2)]);
-                subValue = subValue .* subMask;
-                subCount= subMask;
-                % permute subject timecourse by vertex
-                % only for non-zero vertex or you'll get complex numbers
-                for aa = 1:size(subValue,1)
-                    if subMask(aa)~=0
-                      subValue(aa,:)=phase_rand(subValue(aa,:));
-                    end
-                end
-                if k==1  % change this so that it checks whether it exists
-                    meanSubTC.(group).(movie).(hemi).sum=subValue;
-                    meanSubTC.(group).(movie).(hemi).count=subCount;            
-                else
-                    meanSubTC.(group).(movie).(hemi).sum=meanSubTC.(group).(movie).(hemi).sum+subValue;
-                    meanSubTC.(group).(movie).(hemi).count=meanSubTC.(group).(movie).(hemi).count + subCount; 
-                end
-                % Prep the Leave-One-Out by Subtracting out the Subject
-                meanSubTC.(group).(movie).(hemi).sub.(sub)= subValue;
-                meanSubTC.(group).(movie).(hemi).subCount.(sub)= subCount;                
-                rawSubValue.(group).(movie).(hemi).sub.(sub) =  subValue;
-                rawSubValue.(group).(movie).(hemi).mask.(sub) =  subMask;
-                clear sub subFile subValue subCount subMask nonNullCount
-            end
-            % Make Mean Timecourse file of all Subs in a Group. No need to
-            % mask by vertices that contain all subs
-            meanSubTC.(group).(movie).(hemi).value = meanSubTC.(group).(movie).(hemi).sum ./ meanSubTC.(group).(movie).(hemi).count;
-            if ~exist([thisDir '/NIFTIs/'], 'dir')
-                mkdir([thisDir '/NIFTIs/']);
-            end 
-            % save mean TC
-            meanSubTC.(group).(movie).(hemi).value(isnan(meanSubTC.(group).(movie).(hemi).value))=0;
-            %nifti(:,1,1,:)=meanSubTC.(group).(movie).(hemi).value(:,:);
-            %save_avw(nifti,[thisDir '/NIFTIs/' group '_Mean_TC.nii.gz'],'d',[1 1 1 2]);
-            %fprintf([thisDir '/' group '_Mean_TC.gii\n']);          
-            %clear nifti;
-            % save subject count mask
-            %nifti(:,1,1,:)=meanSubTC.(group).(movie).(hemi).count(:,:);
-            %save_avw(nifti,[thisDir '/NIFTIs/' group '_SubCount.nii.gz'],'d',[1 1 1 2]);          
-            %clear nifti;
-            % Now make the Subject Specific Group Averages for
-            % Leave-One-Out
-            % If you add the SubValue, it will subtract it from the total
-            % sum
-            % Need to divide by number of subjects that contributed to the
-            % data.  If you calculate this number by subtracting 1 from the
-            % total subject map count, it would be wrong.  That assumes
-            % that the current subject has contributed a value at every
-            % vertex.  Instead, you need to subtract the subject specific
-            % contribution (either 0 or 1).
-            for k = 1:length(theseSubs)
-                sub=theseSubs{k};
-                meanSubTC.(group).(movie).(hemi).subCount.(sub) = (meanSubTC.(group).(movie).(hemi).count - meanSubTC.(group).(movie).(hemi).subCount.(sub));
-                meanSubTC.(group).(movie).(hemi).sub.(sub)= (meanSubTC.(group).(movie).(hemi).sum - meanSubTC.(group).(movie).(hemi).sub.(sub)) ./ meanSubTC.(group).(movie).(hemi).subCount.(sub);
-                meanSubTC.(group).(movie).(hemi).sub.(sub)(isnan(meanSubTC.(group).(movie).(hemi).sub.(sub))) = 0;
-                if ~exist([thisDir '/' group '_Sub_vs_' group '_Mean/NIFTIs/'], 'dir')
-                    mkdir([thisDir '/' group '_Sub_vs_' group '_Mean/NIFTIs/']);
-                end
-                %nifti(:,1,1,:)=meanSubTC.(group).(movie).(hemi).sub.(sub)(:,:);
-                %nifti(isnan(nifti))=0;
-                %save_avw(nifti,[thisDir '/' group '_Sub_vs_' group '_Mean/NIFTIs/' group '_Mean_TC_for_' sub '.nii.gz'],'d',[1 1 1 2]);
-                %fprintf([thisDir '/' group '_Sub_vs_' group '_Mean/' group '_Mean_TC_for_' sub '.gii\n']);
-                %clear nifti;
-                % save subject count mask
-                %nifti(:,1,1,:)=meanSubTC.(group).(movie).(hemi).subCount.(sub)(:,:);
-                %save_avw(nifti,[thisDir '/' group '_Sub_vs_' group '_Mean/NIFTIs/' group '_Sub_Count_for_' sub '.nii.gz'],'d',[1 1 1 2]);          
-                %clear nifti;
-            end
-            clear k theseSubs thisDir
-        end
-        clear j hemi
-    end
-    clear i movie
+% INPUT
+% server_name =  'marcc' (compute cluster) or 'arwen'; determines absolute paths set below                           
+% batch_num =   only necesseary for permutation analysis, leave empty if
+%               performing ISC on empirical data
+
+% OUTPUT
+% if empirical data, writes nifti files representing average Fisher
+% transformed R for each vertex.
+% if permutation analysis, writes csv file of same info on phase-shuffled
+% data. also writes max R value for each hemi.
+
+if nargin == 1 % ~exist(batch_num, 'var'); not sure why this doesnt work    
+    clearvars -except server_name
+    is_perm = 0;
+else
+    clearvars -except server_name batch_num
+    is_perm = 1;    
 end
-clear r group
-%save('ISC-workspace.mat');
 
-for r=1:length(groups)
-    group1=groups{r};
-    for v=1:length(groups)
-        group2=groups{v};
-        for i = 1:length(movies)
-            movie=movies{i};
-            theseSubs=subs.(movie).(group1);
-            for j=1:length(hemis)        
-                hemi=hemis{j};               
-                thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{movie,hemi});           
-                for k = 1:length(theseSubs)
-                    sub = theseSubs{k};
-                    subValue = rawSubValue.(group1).(movie).(hemi).sub.(sub);
-                    subValueMask = rawSubValue.(group1).(movie).(hemi).mask.(sub);
+if strcmp(server_name, 'arwen') 
+    addpath('/media/BednyDrobo/Tools/matlab/spm12');
+    addpath('/opt/fsl/5.0.9/etc/matlab/');
+    path_pre = '/media/BednyDrobo/Projects/GNGC';
+elseif strcmp(server_name, 'marcc') 
+    addpath('/software/apps/fsl/5.0.11/etc/matlab/');
+    path_pre = '/home-4/rloioti1@jhu.edu/work/GNGC';
+else
+    error('Need to set up path structure for that server. Current avalailable options are marcc and arwen.');
+end
+
+%% Declare Constants
+FMRI_FILENAME_TEMPLATE = [path_pre '/subReplace/crosscorr/preproc-12fwhm/condReplace.feat/NIFTIs/hemiReplace.32k_fs_LR.surfed_data.func.nii.gz'];
+GROUPS = {'S', 'CB'};
+CONDS = {'rest', 'backward', 'scramble', 'pieman', 'phonecallhome', 'hauntedhouse', 'undercoverwire'};
+HEMIS = {'lh', 'rh'};
+SUBS = load([path_pre '/CrossCorr/subject_list.mat'], 'subs'); % list of participants to include for each condition
+SUBS = SUBS.subs;
+switch is_perm
+    case 0
+        OUT_DIR = [path_pre '/CrossCorr/isc/isc-12fwhm/condReplace.hemiReplace'];
+    case 1
+        OUT_DIR = [path_pre '/CrossCorr/isc/isc-12fwhm-perm/condReplace.hemiReplace'];
+        rng(batch_num); % seed the random number generator so that not all batches are the same
+end
+
+tic; % start timer
+
+%% ISC Analysis
+%% Get Mean Group Timecourses and LOO Mean Group Timecourses
+for g = 1:length(GROUPS)
+    group = GROUPS{g};
+    for c = 1:length(CONDS)
+        cond = CONDS{c};
+        for h = 1:length(HEMIS)        
+            hemi = HEMIS{h};
+            this_out_dir = regexprep(OUT_DIR, {'condReplace', 'hemiReplace'}, {cond, hemi});
+            group_subs_by_cond = SUBS.(cond).(group);
+            for i = 1:length(group_subs_by_cond)
+                sub = group_subs_by_cond{i};
+                [sub_tc, sub_tc_mask] = get_cleaned_fmri(sub, cond, hemi, FMRI_FILENAME_TEMPLATE); % get fmri timecourse (tc) for this scan
+                % if permutation, shuffle each vertex timecourse
+                % only for non-zero vertex or you'll get complex numbers
+                if is_perm == 1
+                    sub_tc = get_permuted_fmri(sub_tc, sub_tc_mask);
+                end
+                % add subject data to aggregate struct
+                if i == 1  
+                    tc.(group).(cond).(hemi).sum = sub_tc;
+                    tc.(group).(cond).(hemi).count = sub_tc_mask;            
+                else
+                    tc.(group).(cond).(hemi).sum = tc.(group).(cond).(hemi).sum + sub_tc;
+                    tc.(group).(cond).(hemi).count = tc.(group).(cond).(hemi).count + sub_tc_mask; 
+                end
+                % store subject data separately
+                sub_data.(group).(cond).(hemi).(sub).tc = sub_tc;
+                sub_data.(group).(cond).(hemi).(sub).mask = sub_tc_mask;                
+                clear sub sub_tc sub_tc_mask
+            end
+            clear i
+            % make mean timecourse file of all subs in a group.
+            % no need to mask by vertices that contain all subs
+            tc.(group).(cond).(hemi).mean = tc.(group).(cond).(hemi).sum ...
+                                                ./ tc.(group).(cond).(hemi).count;
+            tc.(group).(cond).(hemi).mask = (tc.(group).(cond).(hemi).count > 0);                               
+            % save mean TC if empirical data
+            if is_perm == 0
+                write_image([this_out_dir '/NIFTIs/' group '_Mean_TC.nii.gz'], ...
+                            tc.(group).(cond).(hemi).mean); % mean timecourse
+                write_image([this_out_dir '/NIFTIs/' group '_Sub_Count.nii.gz'], ...
+                            tc.(group).(cond).(hemi).count); % num of subs per vertex
+            end  
+            % Now make the leave-one-out group averages 
+            % For each subject, subtract subject data from group             
+            % Need to divide by number of subjects that contributed to the
+            % data. 
+            % If you calculate this number by subtracting 1 from the
+            % total subject map count, it would be wrong since it assumes
+            % that the current subject has contributed a value at every
+            % vertex. Instead, you need to subtract the subject specific
+            % contribution (either 0 or 1).
+            for k = 1:length(group_subs_by_cond)
+                sub = group_subs_by_cond{k};
+                tc.(group).(cond).(hemi).for_sub.(sub).count = tc.(group).(cond).(hemi).count ...
+                                                                - sub_data.(group).(cond).(hemi).(sub).mask;
+                tc.(group).(cond).(hemi).for_sub.(sub).sum = tc.(group).(cond).(hemi).sum ...
+                                                                - sub_data.(group).(cond).(hemi).(sub).tc; 
+                tc.(group).(cond).(hemi).for_sub.(sub).mean = tc.(group).(cond).(hemi).for_sub.(sub).sum ...
+                                                                ./ tc.(group).(cond).(hemi).for_sub.(sub).count;
+                tc.(group).(cond).(hemi).for_sub.(sub).mask = (tc.(group).(cond).(hemi).for_sub.(sub).count > 0);
+                if is_perm == 0
+                    write_image([this_out_dir '/' group '_Sub_vs_' group '_Mean/NIFTIs/' group '_Mean_TC_for_' sub '.nii.gz'], ...
+                                 tc.(group).(cond).(hemi).for_sub.(sub).mean); % mean LOO timecourse for sub
+                    write_image([this_out_dir '/' group '_Sub_vs_' group '_Mean/NIFTIs/' group '_Sub_Count_for_' sub '.nii.gz'], ...
+                                 tc.(group).(cond).(hemi).for_sub.(sub).count); % mean LOO timecourse for sub
+                end
+                clear sub
+            end
+            clear k hemi this_out_dir group_subs_by_cond
+        end
+        clear h cond
+    end
+    clear c group
+end
+clear g
+
+%% Correlate Subject Timecourses to Group Timecourses
+for g = 1:length(GROUPS)
+    group1 = GROUPS{g}; 
+    for g2 = 1:length(GROUPS) % 2 groups because we correlate both within and across groups
+        group2 = GROUPS{g2};
+        for c = 1:length(CONDS)
+            cond = CONDS{c};
+            group_subs_by_cond = SUBS.(cond).(group1); % group1 defines individual subjects
+            for h = 1:length(HEMIS)        
+                hemi = HEMIS{h};               
+                this_out_dir = regexprep(OUT_DIR,{'condReplace','hemiReplace'},{cond,hemi});           
+                for k = 1:length(group_subs_by_cond)
+                    sub = group_subs_by_cond{k};
+                    sub_tc = sub_data.(group1).(cond).(hemi).(sub).tc;
+                    sub_mask = sub_data.(group1).(cond).(hemi).(sub).mask;
                     % Correlate each subject with each group's mean
-                    % Importantly, the procedure is different if subject is
+                    % Importantly, use the LOO group if subject is
                     % part of their own group
-                    if group1==group2
-                        toCorrelate = meanSubTC.(group1).(movie).(hemi).sub.(sub);
-                        toCorrelateMask=(meanSubTC.(group1).(movie).(hemi).subCount.(sub) > 0);
+                    if group1 == group2
+                        to_correlate = tc.(group1).(cond).(hemi).for_sub.(sub).mean;
+                        to_correlate_mask = tc.(group1).(cond).(hemi).for_sub.(sub).mask;
                     else
-                        toCorrelate = meanSubTC.(group2).(movie).(hemi).value;
-                        toCorrelateMask=(meanSubTC.(group2).(movie).(hemi).count > 0);
+                        to_correlate = tc.(group2).(cond).(hemi).mean;
+                        to_correlate_mask = tc.(group).(cond).(hemi).mask;
                     end
-                    % To avoid this loop, you could calcute corr by hand,
-                    % like with fslmaths           
-                    for a=1:size(subValue,1)
-                        subValueCorrGroup(a,1)=corr2(subValue(a,:),toCorrelate(a,:));
+                    % To avoid this loop, you could use corcoeff and take the diagonal
+                    % But that takes longer for this data size
+                    sub_corr_to_group.val = zeros(size(sub_tc,1));
+                    for a = 1:size(sub_tc,1) % for all vertices
+                        sub_corr_to_group.val(a,1) = corr2(sub_tc(a,:), to_correlate(a,:));
                     end
-                    subValueCorrGroup(isnan(subValueCorrGroup))=0;
-                    if ~exist([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs'], 'dir')
-                        mkdir([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs']);
-                    end
-                    %nifti(:,1,1,:)=subValueCorrGroup(:,:);           
-                    %save_avw(nifti,[thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/' sub '_corr.nii.gz'],'d',[1 1 1 2]);
-                    %fprintf('save nifti\n');
-                    %clear nifti;
-                    %nifti(:,1,1,:)=1-subValueCorrGroup(:,:).^2;
-                    %nifti(isnan(nifti))=0;
-                    %save_avw(nifti,[thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/' sub '_resid.nii.gz'],'d',[1 1 1 2]);
-                    %fprintf('save nifti\n');
-                    %clear nifti;
-                    %nifti(:,1,1,:)=(size(subValue,2)-2) .* ones([size(subValue,1),1]); % This mask should be zeroed-out where there are no values
-                    %nifti(isnan(nifti))=0;
-                    %save_avw(nifti,[thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/' sub '_DOFs.nii.gz'],'d',[1 1 1 2]);
-                    %fprintf('save nifti\n');
-                    %clear nifti toCorrelate  
-                    subValueCorrGroup = subValueCorrGroup .* (subValueMask(:,1) .* toCorrelateMask(:,1)); % to be safe. note that it's not good to look for corr values = 0 since those may occur naturally
-                    if k==1
-                        mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).sum = subValueCorrGroup;
-                        mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).count = subValueMask(:,1) .* toCorrelateMask(:,1); % both vectors have to be non-zero
+                    clear a
+                    sub_corr_to_group.val(isnan(sub_corr_to_group.val)) = 0; % get rid of NaNs now or will zero out for any missing sub vertex
+                    sub_corr_to_group.mask = sub_mask(:,1) .* to_correlate_mask(:,1); % don't look for 0 corr since that can happen naturally
+                    if k == 1
+                        corr.(group1).(group2).(cond).(hemi).sum = sub_corr_to_group.val;
+                        corr.(group1).(group2).(cond).(hemi).count = sub_corr_to_group.mask;
                     else
-                        mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).sum = mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).sum + subValueCorrGroup;
-                        mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).count = mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).count + (subValueMask(:,1) .* toCorrelateMask(:,1));
+                        corr.(group1).(group2).(cond).(hemi).sum = corr.(group1).(group2).(cond).(hemi).sum ...
+                                                                    + sub_corr_to_group.val;
+                        corr.(group1).(group2).(cond).(hemi).count = corr.(group1).(group2).(cond).(hemi).count ...
+                                                                    + sub_corr_to_group.mask;
                     end
-                    clear sub subFile subValue subValueCorrGroup subValueMask toCorrelateMask
+                    if is_perm == 0
+                        write_image([this_out_dir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/' sub '_corr.nii.gz'], ...
+                                    sub_corr_to_group.val); % corr for sub
+                    end
+                    clear sub sub_tc sub_mask to_correlate to_correlate_mask sub_corr_to_group
                 end
                 clear k
+                % get the mean corr for all subjects' corrs 
+                % in this group and condition
+                corr.(group1).(group2).(cond).(hemi).mean = corr.(group1).(group2).(cond).(hemi).sum ...
+                                                            ./ corr.(group1).(group2).(cond).(hemi).count;
+                corr.(group1).(group2).(cond).(hemi).mask = (corr.(group1).(group2).(cond).(hemi).count > 0);
+                corr.(group1).(group2).(cond).(hemi).z_mean = r_to_z(corr.(group1).(group2).(cond).(hemi).mean);
+                % REL TO DO: possibly convert R to Z at the individual
+                % subject level, before meaning
+                if perm == 0
+                    write_image([this_out_dir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/Mean_Corr_Z.nii.gz'], corr.(group1).(group2).(cond).(hemi).z_mean);
+                else
+                    write_perm_info(batch_num, [this_out_dir '/' group1 '_Sub_vs_' group2 '_Mean'], ...
+                                    corr.(group1).(group2).(cond).(hemi).z_mean, corr.(group1).(group2).(cond).(hemi).mask);
+                end
+                clear hemi
             end
-            clear j hemi thisDir
+            clear h cond this_out_dir group_subs_by_cond
         end
-        clear i movie theseSubs
+        clear c group2
     end
-    clear v group2      
+    clear g2 group1    
 end
-clear r group1
-
-% Now aggregate (average) all single-subject to group correlations    
-for r=1:length(groups)
-    group1=groups{r};
-    for v=1:length(groups)
-        group2=groups{v};
-        for i = 1:length(movies)
-            movie=movies{i};
-            for j=1:length(hemis)        
-                hemi=hemis{j};
-                thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{movie,hemi});  
-                mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).value = mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).sum ./ mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).count;
-                mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).value(isnan(mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).value))=0;
-                mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).mask = (mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).count > 0);
-                mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).value = mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).value .* mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).mask; % to be safe
-                nifti1(:,1,1,:)=mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).value(:,:);
-                mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).zvalue = rtoz(mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).value);
-                nifti2(:,1,1,:)=mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).zvalue(:,:);             
-                write_max(batch_num, nifti1, nifti2,[thisDir '/' group1 '_Sub_vs_' group2 '_Mean'], mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).mask);
-                clear nifti1;
-                clear nifti2;
-                %nifti(:,1,1,:)=mean_corr_sub_by_group.(movie).(hemi).(group1).(group2).count(:,:);
-                %save_avw(nifti,[thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/Sub_Count_for_mean_corr.nii.gz'],'d',[1 1 1 2]);
-                %clear nifti;
-            end
-            clear j hemi 
-        end
-        clear i movie thisDir
-    end
-    clear v group2      
-end
-clear r group1
-
-% Now aggregate across and compare conditions
-for r=1:length(groups)
-    group1=groups{r};
-    for v=1:length(groups)
-        group2=groups{v};
-            for j=1:length(hemis)        
-                hemi=hemis{j};
-                % Mean Movies
-                mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).sum  = mean_corr_sub_by_group.('phonecallhome').(hemi).(group1).(group2).value + mean_corr_sub_by_group.('hauntedhouse').(hemi).(group1).(group2).value + mean_corr_sub_by_group.('undercoverwire').(hemi).(group1).(group2).value;
-                mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).count = ...
-                    (mean_corr_sub_by_group.('phonecallhome').(hemi).(group1).(group2).mask ...
-                    + mean_corr_sub_by_group.('hauntedhouse').(hemi).(group1).(group2).mask ...
-                    + mean_corr_sub_by_group.('undercoverwire').(hemi).(group1).(group2).mask);
-                mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).mask = (mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).count > 0);
-                mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).value = mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).sum ./ mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).count;
-                mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).value =  mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).value .*  mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).mask;
-                mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).value(isnan(mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).value)) = 0;
-                thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{'meanmovies',hemi});  
-                if ~exist([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs'], 'dir')
-                    mkdir([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs']);
-                end 
-                nifti1(:,1,1,:) = mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).value(:,:);
-                mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).zsum  = mean_corr_sub_by_group.('phonecallhome').(hemi).(group1).(group2).zvalue + mean_corr_sub_by_group.('hauntedhouse').(hemi).(group1).(group2).zvalue + mean_corr_sub_by_group.('undercoverwire').(hemi).(group1).(group2).zvalue;
-                mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).zvalue = mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).zsum ./ mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).count;
-                mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).zvalue =  mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).zvalue .*  mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).mask;
-                mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).zvalue(isnan(mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).zvalue)) = 0;
-                nifti2(:,1,1,:) = mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).zvalue(:,:);    
-                write_max(batch_num, nifti1, nifti2, [thisDir '/' group1 '_Sub_vs_' group2 '_Mean'],mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).mask);
-                clear nifti1 nifti2;
-                % Mean Movies - Backward
-                mean_corr_sub_by_group.('meanmovies_backward').(hemi).(group1).(group2).value  = (mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).value - mean_corr_sub_by_group.('backward').(hemi).(group1).(group2).value);
-                mean_corr_sub_by_group.('meanmovies_backward').(hemi).(group1).(group2).mask = ...
-                    (mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).mask .* ...
-                     mean_corr_sub_by_group.('backward').(hemi).(group1).(group2).mask);
-                mean_corr_sub_by_group.('meanmovies_backward').(hemi).(group1).(group2).value = mean_corr_sub_by_group.('meanmovies_backward').(hemi).(group1).(group2).value .* mean_corr_sub_by_group.('meanmovies_backward').(hemi).(group1).(group2).mask;
-                thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{'meanmovies_backward',hemi});  
-                if ~exist([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/'], 'dir')
-                    mkdir([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/']);
-                end 
-                nifti1(:,1,1,:) = mean_corr_sub_by_group.('meanmovies_backward').(hemi).(group1).(group2).value(:,:);
-                mean_corr_sub_by_group.('meanmovies_backward').(hemi).(group1).(group2).zvalue  = (mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).zvalue - mean_corr_sub_by_group.('backward').(hemi).(group1).(group2).zvalue);
-                mean_corr_sub_by_group.('meanmovies_backward').(hemi).(group1).(group2).zvalue = mean_corr_sub_by_group.('meanmovies_backward').(hemi).(group1).(group2).zvalue .* mean_corr_sub_by_group.('meanmovies_backward').(hemi).(group1).(group2).mask;
-                nifti2(:,1,1,:) = mean_corr_sub_by_group.('meanmovies_backward').(hemi).(group1).(group2).zvalue(:,:);   
-                write_max(batch_num, nifti1, nifti2, [thisDir '/' group1 '_Sub_vs_' group2 '_Mean'],mean_corr_sub_by_group.('meanmovies_backward').(hemi).(group1).(group2).mask);
-                clear nifti1 nifti2;
-                % Pie-Man - Backward
-                mean_corr_sub_by_group.('pieman_backward').(hemi).(group1).(group2).value  = (mean_corr_sub_by_group.('pieman').(hemi).(group1).(group2).value - mean_corr_sub_by_group.('backward').(hemi).(group1).(group2).value);
-                mean_corr_sub_by_group.('pieman_backward').(hemi).(group1).(group2).mask = ...
-                    (mean_corr_sub_by_group.('pieman').(hemi).(group1).(group2).mask .* ... 
-                     mean_corr_sub_by_group.('backward').(hemi).(group1).(group2).mask);
-                mean_corr_sub_by_group.('pieman_backward').(hemi).(group1).(group2).value = mean_corr_sub_by_group.('pieman_backward').(hemi).(group1).(group2).value .* mean_corr_sub_by_group.('pieman_backward').(hemi).(group1).(group2).mask;
-                thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{'pieman_backward',hemi});  
-                if ~exist([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/'], 'dir')
-                    mkdir([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/']);
-                end 
-                nifti1(:,1,1,:) = mean_corr_sub_by_group.('pieman_backward').(hemi).(group1).(group2).value(:,:);
-                mean_corr_sub_by_group.('pieman_backward').(hemi).(group1).(group2).zvalue  = (mean_corr_sub_by_group.('pieman').(hemi).(group1).(group2).zvalue - mean_corr_sub_by_group.('backward').(hemi).(group1).(group2).zvalue);
-                mean_corr_sub_by_group.('pieman_backward').(hemi).(group1).(group2).zvalue = mean_corr_sub_by_group.('pieman_backward').(hemi).(group1).(group2).zvalue .* mean_corr_sub_by_group.('pieman_backward').(hemi).(group1).(group2).mask;
-                nifti2(:,1,1,:) = mean_corr_sub_by_group.('pieman_backward').(hemi).(group1).(group2).zvalue(:,:);
-                write_max(batch_num, nifti1, nifti2, [thisDir '/' group1 '_Sub_vs_' group2 '_Mean'],mean_corr_sub_by_group.('pieman_backward').(hemi).(group1).(group2).mask);
-                clear nifti1 nifti2;
-                % Scramble - Backward
-                mean_corr_sub_by_group.('scramble_backward').(hemi).(group1).(group2).value  = (mean_corr_sub_by_group.('scramble').(hemi).(group1).(group2).value - mean_corr_sub_by_group.('backward').(hemi).(group1).(group2).value);
-                mean_corr_sub_by_group.('scramble_backward').(hemi).(group1).(group2).mask = ...
-                    (mean_corr_sub_by_group.('scramble').(hemi).(group1).(group2).mask ...
-                    .* mean_corr_sub_by_group.('backward').(hemi).(group1).(group2).mask);
-                mean_corr_sub_by_group.('scramble_backward').(hemi).(group1).(group2).value = mean_corr_sub_by_group.('scramble_backward').(hemi).(group1).(group2).value .* mean_corr_sub_by_group.('scramble_backward').(hemi).(group1).(group2).mask; 
-                thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{'scramble_backward',hemi});  
-                if ~exist([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/'], 'dir')
-                    mkdir([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/']);
-                end 
-                nifti1(:,1,1,:) = mean_corr_sub_by_group.('scramble_backward').(hemi).(group1).(group2).value(:,:);
-                mean_corr_sub_by_group.('scramble_backward').(hemi).(group1).(group2).zvalue  = (mean_corr_sub_by_group.('scramble').(hemi).(group1).(group2).zvalue - mean_corr_sub_by_group.('backward').(hemi).(group1).(group2).zvalue);         
-                mean_corr_sub_by_group.('scramble_backward').(hemi).(group1).(group2).zvalue = mean_corr_sub_by_group.('scramble_backward').(hemi).(group1).(group2).zvalue .* mean_corr_sub_by_group.('scramble_backward').(hemi).(group1).(group2).mask; 
-                nifti2(:,1,1,:) = mean_corr_sub_by_group.('scramble_backward').(hemi).(group1).(group2).zvalue(:,:);
-                write_max(batch_num, nifti1,nifti2,[thisDir '/' group1 '_Sub_vs_' group2 '_Mean'],mean_corr_sub_by_group.('scramble_backward').(hemi).(group1).(group2).mask);
-                clear nifti1 nifti2;
-                % Pie-Man - Scramble
-                mean_corr_sub_by_group.('pieman_scramble').(hemi).(group1).(group2).value  = (mean_corr_sub_by_group.('pieman').(hemi).(group1).(group2).value - mean_corr_sub_by_group.('scramble').(hemi).(group1).(group2).value);
-                mean_corr_sub_by_group.('pieman_scramble').(hemi).(group1).(group2).mask = ...
-                    (mean_corr_sub_by_group.('pieman').(hemi).(group1).(group2).mask ...
-                    .* mean_corr_sub_by_group.('scramble').(hemi).(group1).(group2).mask);
-                mean_corr_sub_by_group.('pieman_scramble').(hemi).(group1).(group2).value = mean_corr_sub_by_group.('pieman_scramble').(hemi).(group1).(group2).value .* mean_corr_sub_by_group.('pieman_scramble').(hemi).(group1).(group2).mask;
-                thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{'pieman_scramble',hemi});  
-                if ~exist([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs'], 'dir')
-                    mkdir([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs']);
-                end 
-                nifti1(:,1,1,:) = mean_corr_sub_by_group.('pieman_scramble').(hemi).(group1).(group2).value(:,:);
-                mean_corr_sub_by_group.('pieman_scramble').(hemi).(group1).(group2).zvalue  = (mean_corr_sub_by_group.('pieman').(hemi).(group1).(group2).zvalue - mean_corr_sub_by_group.('scramble').(hemi).(group1).(group2).zvalue);         
-                mean_corr_sub_by_group.('pieman_scramble').(hemi).(group1).(group2).zvalue = mean_corr_sub_by_group.('pieman_scramble').(hemi).(group1).(group2).zvalue .* mean_corr_sub_by_group.('pieman_scramble').(hemi).(group1).(group2).mask;
-                nifti2(:,1,1,:) = mean_corr_sub_by_group.('pieman_scramble').(hemi).(group1).(group2).zvalue(:,:);
-                write_max(batch_num, nifti1, nifti2,[thisDir '/' group1 '_Sub_vs_' group2 '_Mean'],mean_corr_sub_by_group.('pieman_scramble').(hemi).(group1).(group2).mask);
-                clear nifti1 nifti2;
-                % Mean Movies - PieMan
-                mean_corr_sub_by_group.('meanmovies_pieman').(hemi).(group1).(group2).value  = (mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).value - mean_corr_sub_by_group.('pieman').(hemi).(group1).(group2).value);
-                mean_corr_sub_by_group.('meanmovies_pieman').(hemi).(group1).(group2).mask = ...
-                    (mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).mask ...
-                    .* mean_corr_sub_by_group.('pieman').(hemi).(group1).(group2).mask);
-                mean_corr_sub_by_group.('meanmovies_pieman').(hemi).(group1).(group2).value = mean_corr_sub_by_group.('meanmovies_pieman').(hemi).(group1).(group2).value .* mean_corr_sub_by_group.('meanmovies_pieman').(hemi).(group1).(group2).mask;
-                thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{'meanmovies_pieman',hemi});  
-                if ~exist([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/'], 'dir')
-                    mkdir([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/']);
-                end 
-                nifti1(:,1,1,:) = mean_corr_sub_by_group.('meanmovies_pieman').(hemi).(group1).(group2).value(:,:);
-                mean_corr_sub_by_group.('meanmovies_pieman').(hemi).(group1).(group2).zvalue  = (mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).zvalue - mean_corr_sub_by_group.('pieman').(hemi).(group1).(group2).zvalue);
-                mean_corr_sub_by_group.('meanmovies_pieman').(hemi).(group1).(group2).zvalue = mean_corr_sub_by_group.('meanmovies_pieman').(hemi).(group1).(group2).zvalue .* mean_corr_sub_by_group.('meanmovies_pieman').(hemi).(group1).(group2).mask;
-                nifti2(:,1,1,:) = mean_corr_sub_by_group.('meanmovies_pieman').(hemi).(group1).(group2).zvalue(:,:);
-                write_max(batch_num, nifti1, nifti2, [thisDir '/' group1 '_Sub_vs_' group2 '_Mean'],mean_corr_sub_by_group.('meanmovies_pieman').(hemi).(group1).(group2).mask);
-                clear nifti1 nifti2;
-                % PieMan - Mean Movies 
-                mean_corr_sub_by_group.('pieman_meanmovies').(hemi).(group1).(group2).value  = (-mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).value + mean_corr_sub_by_group.('pieman').(hemi).(group1).(group2).value);
-                mean_corr_sub_by_group.('pieman_meanmovies').(hemi).(group1).(group2).mask = ...
-                    (mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).mask ...
-                    .* mean_corr_sub_by_group.('pieman').(hemi).(group1).(group2).mask);
-                mean_corr_sub_by_group.('pieman_meanmovies').(hemi).(group1).(group2).value = mean_corr_sub_by_group.('pieman_meanmovies').(hemi).(group1).(group2).value .* mean_corr_sub_by_group.('pieman_meanmovies').(hemi).(group1).(group2).mask;
-                thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{'pieman_meanmovies',hemi});  
-                if ~exist([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/'], 'dir')
-                    mkdir([thisDir '/' group1 '_Sub_vs_' group2 '_Mean/NIFTIs/']);
-                end 
-                nifti1(:,1,1,:) = mean_corr_sub_by_group.('pieman_meanmovies').(hemi).(group1).(group2).value(:,:);
-                mean_corr_sub_by_group.('pieman_meanmovies').(hemi).(group1).(group2).zvalue  = (-mean_corr_sub_by_group.('meanmovies').(hemi).(group1).(group2).zvalue + mean_corr_sub_by_group.('pieman').(hemi).(group1).(group2).zvalue);
-                mean_corr_sub_by_group.('pieman_meanmovies').(hemi).(group1).(group2).zvalue = mean_corr_sub_by_group.('pieman_meanmovies').(hemi).(group1).(group2).zvalue .* mean_corr_sub_by_group.('pieman_meanmovies').(hemi).(group1).(group2).mask;
-                nifti2(:,1,1,:) = mean_corr_sub_by_group.('pieman_meanmovies').(hemi).(group1).(group2).zvalue(:,:);
-                write_max(batch_num, nifti1, nifti2, [thisDir '/' group1 '_Sub_vs_' group2 '_Mean'],mean_corr_sub_by_group.('pieman_meanmovies').(hemi).(group1).(group2).mask);
-                clear nifti1 nifti2;
-            end
-            clear j hemi 
-    end
-    clear v group2      
-end
-clear r group1
-
-% Now average CB-S and S-CB
-conditions = {movies{:}, 'meanmovies', 'meanmovies_backward', 'pieman_backward', 'scramble_backward', 'pieman_scramble', 'meanmovies_pieman', 'pieman_meanmovies'};
-for i=1:length(conditions)
-    cond=conditions{i};
-    for j=1:length(hemis)        
-        hemi=hemis{j};
-        % Mean CB-S and S-CB
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').value  = (mean_corr_sub_by_group.(cond).(hemi).('CB').('S').value + mean_corr_sub_by_group.(cond).(hemi).('S').('CB').value)/2;
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').mask = ...
-                    (mean_corr_sub_by_group.(cond).(hemi).('CB').('S').mask .* ...
-                    mean_corr_sub_by_group.(cond).(hemi).('S').('CB').mask);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').value = mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').value .* mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').mask;
-        thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{cond,hemi});  
-        if ~exist([thisDir '/' 'CB_and_S' '_Mean/NIFTIs/'], 'dir')
-            mkdir([thisDir '/' 'CB_and_S' '_Mean/NIFTIs/']);
-        end 
-        nifti1(:,1,1,:) = mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').value(:,:);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').zvalue  = (mean_corr_sub_by_group.(cond).(hemi).('CB').('S').zvalue + mean_corr_sub_by_group.(cond).(hemi).('S').('CB').zvalue)/2;
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').zvalue = mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').zvalue .* mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').mask;        
-        nifti2(:,1,1,:) = mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').zvalue(:,:);
-        write_max(batch_num, nifti1,nifti2,[thisDir '/' 'CB_and_S' '_Mean'],mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').mask);
-        clear nifti1 nifti2;
-        % CB - S (includes interactions)
-        mean_corr_sub_by_group.(cond).(hemi).('CB_S').('CB_S').value  = (mean_corr_sub_by_group.(cond).(hemi).('CB').('CB').value - mean_corr_sub_by_group.(cond).(hemi).('S').('S').value);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_S').('CB_S').mask = ...
-                    (mean_corr_sub_by_group.(cond).(hemi).('CB').('CB').mask .* ...
-                     mean_corr_sub_by_group.(cond).(hemi).('S').('S').mask);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_S').('CB_S').value = mean_corr_sub_by_group.(cond).(hemi).('CB_S').('CB_S').value .* mean_corr_sub_by_group.(cond).(hemi).('CB_S').('CB_S').mask;      
-        thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{cond,hemi});  
-        if ~exist([thisDir '/' 'CB_minus_S' '_Mean/NIFTIs/'], 'dir')
-            mkdir([thisDir '/' 'CB_minus_S' '_Mean/NIFTIs/']);
-        end 
-        nifti1(:,1,1,:) = mean_corr_sub_by_group.(cond).(hemi).('CB_S').('CB_S').value(:,:);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_S').('CB_S').zvalue  = (mean_corr_sub_by_group.(cond).(hemi).('CB').('CB').zvalue - mean_corr_sub_by_group.(cond).(hemi).('S').('S').zvalue);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_S').('CB_S').zvalue = mean_corr_sub_by_group.(cond).(hemi).('CB_S').('CB_S').zvalue .* mean_corr_sub_by_group.(cond).(hemi).('CB_S').('CB_S').mask;      
-        nifti2(:,1,1,:) = mean_corr_sub_by_group.(cond).(hemi).('CB_S').('CB_S').zvalue(:,:);       
-        write_max(batch_num, nifti1, nifti2, [thisDir '/' 'CB_minus_S' '_Mean'],mean_corr_sub_by_group.(cond).(hemi).('CB_S').('CB_S').mask);
-        clear nifti1 nifti2;      
-        % CB_and_S - S (includes interactions)
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_S').('CB_and_S_S').value  = (-mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').value + mean_corr_sub_by_group.(cond).(hemi).('S').('S').value);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_S').('CB_and_S_S').mask = ...
-                    (mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').mask .* ...
-                    mean_corr_sub_by_group.(cond).(hemi).('S').('S').mask);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_S').('CB_and_S_S').value = mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_S').('CB_and_S_S').value .* mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_S').('CB_and_S_S').mask;        
-        thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{cond,hemi});  
-        if ~exist([thisDir '/' 'CB_and_S_minus_S' '_Mean/NIFTIs/'], 'dir')
-            mkdir([thisDir '/' 'CB_and_S_minus_S' '_Mean/NIFTIs/']);
-        end 
-        nifti1(:,1,1,:) = mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_S').('CB_and_S_S').value(:,:);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_S').('CB_and_S_S').zvalue  = (-mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').zvalue + mean_corr_sub_by_group.(cond).(hemi).('S').('S').zvalue);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_S').('CB_and_S_S').zvalue = mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_S').('CB_and_S_S').zvalue .* mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_S').('CB_and_S_S').mask;        
-        nifti2(:,1,1,:) = mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_S').('CB_and_S_S').zvalue(:,:);
-        write_max(batch_num, nifti1, nifti2, [thisDir '/' 'CB_and_S_minus_S' '_Mean'],mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_S').('CB_and_S_S').mask);
-        clear nifti1 nifti2;  
-        % CB_and_S - CB (includes interactions)
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_CB').('CB_and_S_CB').value  = (-mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').value + mean_corr_sub_by_group.(cond).(hemi).('CB').('CB').value);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_CB').('CB_and_S_CB').mask = ...
-                   (mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').mask .* ...
-                    mean_corr_sub_by_group.(cond).(hemi).('CB').('CB').mask);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_CB').('CB_and_S_CB').value = mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_CB').('CB_and_S_CB').value .* mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_CB').('CB_and_S_CB').mask;
-        thisDir=regexprep(groupDir,{'movieReplace','hemiReplace'},{cond,hemi});  
-        if ~exist([thisDir '/' 'CB_and_S_minus_CB' '_Mean/NIFTIs/'], 'dir')
-            mkdir([thisDir '/' 'CB_and_S_minus_CB' '_Mean/NIFTIs/']);
-        end 
-        nifti1(:,1,1,:) = mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_CB').('CB_and_S_CB').value(:,:);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_CB').('CB_and_S_CB').zvalue  = (-mean_corr_sub_by_group.(cond).(hemi).('CB_and_S').('CB_and_S').zvalue + mean_corr_sub_by_group.(cond).(hemi).('CB').('CB').zvalue);
-        mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_CB').('CB_and_S_CB').zvalue = mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_CB').('CB_and_S_CB').zvalue .* mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_CB').('CB_and_S_CB').mask;
-        nifti2(:,1,1,:) = mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_CB').('CB_and_S_CB').zvalue(:,:);
-        write_max(batch_num, nifti1, nifti2,[thisDir '/' 'CB_and_S_minus_CB' '_Mean'],mean_corr_sub_by_group.(cond).(hemi).('CB_and_S_CB').('CB_and_S_CB').mask);
-        clear nifti1 nifti2;  
-    end
-    clear j hemi 
-end
-clear i cond      
+clear g
 
 toc;
 display(toc/60/60, 'hours');
@@ -433,112 +220,155 @@ display(toc/60/60, 'hours');
 end
 
 
-function [zvalue] = rtoz(rvalue)
-    zvalue=atanh(rvalue);
+function [z_value] = r_to_z(r_value)
+    z_value = atanh(r_value);
 end
 
 
-function [rvalue] = ztor(zvalue)
-    rvalue=tanh(zvalue);
+function [r_value] = z_to_r(z_value)
+    r_value = tanh(z_value);
 end
 
 
-function [null_x] = phase_rand(x)
-x = x';
-permutation=true;
+%% Sub-Functions
 
-[Nsamp K] = size(x);  %extract number of samples and number of signals
-
-x_mean = repmat(mean(x,1), Nsamp,1);
-x_std = repmat(std(x,1), Nsamp, 1); % original line assumes x has mean of 0; would have been fine to use if you subtracted x_mean before calculating; original: sqrt(repmat(dot(x,x), Nsamp, 1)/(Nsamp-1));
-x = x - x_mean;  %remove the mean of each column of X
-x = x./x_std; %divide by the standard deviation of each column
-
-%transform the vectors-to-be-scrambled to the frequency domain
-Fx = fft(x); 
-
-% identify indices of positive and negative frequency components of the fft
-% we need to know these so that we can symmetrize phase of neg and pos freq
-if mod(Nsamp,2) == 0
-    posfreqs = 2:(Nsamp/2);
-    negfreqs = Nsamp : -1 : (Nsamp/2)+2;
-else
-    posfreqs = 2:(Nsamp+1)/2;
-    negfreqs = Nsamp : -1 : (Nsamp+1)/2 + 1;
+function [sub_tc, sub_mask] = get_cleaned_fmri(sub, cond, hemi, fn_temp)  
+    % gets EPI values and its associated mask of non-empty vertices
+    sub_fn = regexprep(fn_temp, {'subReplace','condReplace','hemiReplace'}, {sub,cond,hemi}); 
+    sub_tc = read_avw(sub_fn);
+    sub_tc = sub_tc(:,:); % reduce from 4D to 2D (vertex, time)
+    % find 0s and nans and mask out all 
+    % associated timepoint for that vertex
+    has_value = ~isnan(sub_tc(:,:)) .* ~(sub_tc(:,:)==0);
+    sub_mask = (sum(has_value, 2) == size(has_value, 2)); % only use vertices that have data for all timepoints
+    sub_mask = repmat(sub_mask, [1 size(has_value, 2)]);
+    sub_tc = sub_tc .* sub_mask; % mask EPI
 end
 
-x_amp = abs(Fx);  %get the amplitude of the Fourier components
 
-if permutation
-    x_phase = atan2(imag(Fx), real(Fx)); %get the phases of the Fourier components [NB: must use 'atan2', not 'atan' to get the sign of the angle right]
+function permute_tc = get_permuted_fmri(empirical_tc, empirical_tc_mask)
+    % get 2 permutation vectors for this subject's fMRI that will be used 
+    % for all vertices
+    [~, rp1] = sort(rand(round(size(empirical_tc,2)/2),1)); 
+    [~, rp2] = sort(rand(round(size(empirical_tc,2)/2),1));
+    permute_tc = zeros(size(empirical_tc));
+    for a = 1:size(empirical_tc,1)
+        if empirical_tc_mask(a) ~= 0 % don't permute null vertices
+          permute_tc(a,:) = phase_rand(empirical_tc(a,:), rp1, rp2, true);
+        end
+    end
 end
 
-J = sqrt(-1);  %define the vertical vector in the complex plane
 
-if permutation  
-    [tmp,rp] = sort(rand(Nsamp,K));
-    x_phase=x_phase(rp);
-    sym_phase(posfreqs,:) = x_phase(1:length(posfreqs),:);
-    sym_phase(negfreqs,:) = -x_phase(1:length(posfreqs),:);
-else
-    new_phase=2*pi*rand(length(posfreqs),K);
-    sym_phase(posfreqs,:) = new_phase;
-    sym_phase(negfreqs,:) = -new_phase;
+function [null_x] = phase_rand(x, rp1, rp2, permutation)
+    % Permutes a timecourse (x) by shuffling phases of Fourier Transform.
+    % This preserves dependencies amongst adjacent timepoints and mimics
+    % empirically observed timecourses.
+    % rp1 and rp2 are permutation orders for phases and phase signs,
+    % respectively.
+    % rp1 and rp2 should be round(length of x/2)
+    % Author: Chris Honey (edited)
+    % See https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3787506/
+
+    % param check
+    if length(rp1) ~= round(length(x)/2) || length(rp2) ~= round(length(x)/2)
+        error('permutation vector length must be half of timecourse length (or ceiling)');
+    end
+
+    x = x';
+
+    [Nsamp, ~] = size(x);  %extract number of samples and number of signals
+
+    x_mean = repmat(mean(x,1), Nsamp,1);
+    x_std = repmat(std(x,1), Nsamp, 1); % original line assumes x has mean of 0; would have been fine to use if you subtracted x_mean before calculating; original: sqrt(repmat(dot(x,x), Nsamp, 1)/(Nsamp-1));
+    x = x - x_mean;  % remove the mean of each column of X
+    x = x./x_std; % divide by the standard deviation of each column
+
+    %transform the vectors-to-be-scrambled to the frequency domain
+    Fx = fft(x); 
+
+    % identify indices of positive and negative frequency components of the fft
+    % we need to know these so that we can symmetrize phase of neg and pos freq
+    if mod(Nsamp,2) == 0
+        posfreqs = 2:(Nsamp/2);
+        negfreqs = Nsamp : -1 : (Nsamp/2)+2;
+    else
+        posfreqs = 2:(Nsamp+1)/2;
+        negfreqs = Nsamp : -1 : (Nsamp+1)/2 + 1;
+    end
+
+    x_amp = abs(Fx);  %get the amplitude of the Fourier components
+
+    if permutation
+        x_phase = atan2(imag(Fx), real(Fx)); %get the phases of the Fourier components [NB: must use 'atan2', not 'atan' to get the sign of the angle right]
+    end
+
+    J = sqrt(-1);  %define the vertical vector in the complex plane
+
+    if permutation  
+         x_phase = x_phase(rp1);  % permute phases 
+         sign = x_phase./abs(x_phase);
+         perm_sign = sign(rp2); % permute the signs of phases
+         x_phase = abs(x_phase) .* perm_sign; % change sign so added variability as if permuting second half in
+         sym_phase(1) = x_phase(1,:);
+         sym_phase(posfreqs,:) = x_phase(2:length(posfreqs)+1,:);
+         sym_phase(round(Nsamp/2)+1) = x_phase(1,:); % gets reset if odd length
+         sym_phase(negfreqs,:) = -x_phase(2:length(posfreqs)+1,:);
+         sym_phase(isnan(sym_phase))=0;
+    else
+        new_phase = 2*pi*rand(length(posfreqs),K);
+        sym_phase(posfreqs,:) = new_phase;
+        sym_phase(negfreqs,:) = -new_phase;
+    end
+
+    z = x_amp.*exp(J.*sym_phase); % generate (symmetric)-phase-scrambled Fourier components
+    null_x = real(ifft(z)); % invert the fft to generate a phase-scrambled version of x
+
+    % Make null have same stdev and mean as original
+    null_x_mean = repmat(mean(null_x,1), Nsamp,1);
+    null_x_std = repmat(std(null_x,1), Nsamp, 1);
+    null_x = null_x - null_x_mean;  %remove the mean of each column of null x
+    null_x = null_x./null_x_std; %divide by the standard deviation of each column of null x
+    null_x = null_x .* x_std; % now tranform back to the mean and stdev of x
+    null_x = null_x + x_mean;
+    null_x = null_x';
 end
+
+
+function write_image(fn, vals)
+    [fp, ~, ~] = fileparts(fn);
+    if ~exist(fp, 'dir')
+        mkdir(fp);
+    end 
+    vals(isnan(vals))=0; % remove NaNs
+    nifti(:,1,1,:)=vals(:,:); % map back to 4D structure
+    save_avw(nifti, fn,'d', [1 1 1 2]); % 2 sets the TR
+end
+
+
+function [] = write_perm_info(batch_num, fn_root, vals, mask)
+    % Because there are 1K+ permutations for each cond + group
+    % This saves space and time by writing correlation maps as a csv 
+    % file rather than a nifti
+    % Also takes the max value across all vertices (in the hemi)
+    % for use in multiple correction for vertex-wise stats
     
-z = x_amp.*exp(J.*sym_phase); %generate (symmetric)-phase-scrambled Fourier components
-null_x = ifft(z); %invert the fft to generate a phase-scrambled version of x
+    % write out all vals 
+    fn1 = [fn_root '/CSVs/Mean_corr_z_batch_' mat2str(batch_num) '.csv'];
+    fid=fopen(fn1,'w');
+    fprintf(fid, '%f \n', vals');
+    fclose(fid);
+    
+    % descriptive stats
+    fn2 = [fn_root '/Mean_corr_z_perm_stats.csv'];
+    max_corr = max(vals);
+    min_corr = min(vals);
+    mean_corr = mean(vals(mask==1)); % mean and stdev only for non-zero vertices
+    stdev_corr = std(vals(mask==1));
+    
+    % write stats to file
+    fid=fopen(fn2,'a');
+    fprintf(fid, '%d %f %f %f %f\n', [batch_num max_corr min_corr mean_corr stdev_corr]');
+    fclose(fid);
 
-% Make null have same stdev and mean as original
-null_x_mean = repmat(mean(null_x,1), Nsamp,1);
-null_x_std = repmat(std(null_x,1), Nsamp, 1);
-null_x = null_x - null_x_mean;  %remove the mean of each column of Null X
-null_x = null_x./null_x_std; %divide by the standard deviation of each column of Null X
-null_x = null_x .* x_std; % now tranform back to the mean and stdev of X
-null_x = null_x + x_mean;
-
-%display(corr2(x,null_x));
-
-null_x = null_x';
 end
-
-function [] = write_max(batch_num, nifti, znifti, file_dir, mask)
-% write out max value and other stats
-filename = [file_dir '/Mean_corr_perm_stats.csv'];
-max_nifti_corr = max(nifti);
-min_nifti_corr = min(nifti);
-mean_nifti_corr = mean(nifti);
-std_nifti_corr = std(nifti);
-fid=fopen(filename,'a');
-fprintf(fid, '%d %f %f %f %f\n', [batch_num max_nifti_corr min_nifti_corr mean_nifti_corr std_nifti_corr]');
-fclose(fid);
-
-% write out max value and other stats
-filename = [file_dir '/Mean_corr_z_perm_stats.csv'];
-max_znifti_corr = max(znifti);
-min_znifti_corr = min(znifti);
-mean_znifti_corr = mean(znifti);
-std_znifti_corr = std(znifti);
-fid=fopen(filename,'a');
-fprintf(fid, '%d %f %f %f %f\n', [batch_num max_znifti_corr min_znifti_corr mean_znifti_corr std_znifti_corr]');
-fclose(fid);
-
-% write out all vals (masked so that you're not counting non-true zero
-% correlations)
-mask = ((mask>0) .* ~isnan(nifti));
-nifti_masked = nifti(logical(mask));
-filename = [file_dir '/NIFTIs/Mean_corr_batch_' mat2str(batch_num) '.csv'];
-fid=fopen(filename,'w');
-fprintf(fid, '%f \n', [nifti_masked]');
-fclose(fid);
-
-% write out all vals (masked so that you're not counting non-true zero
-% correlations)
-zmask = ((mask>0) .* ~isnan(znifti));
-znifti_masked = znifti(logical(zmask));
-zfilename = [file_dir '/NIFTIs/Mean_corr_z_batch_' mat2str(batch_num) '.csv'];
-fid=fopen(zfilename,'w');
-fprintf(fid, '%f \n', [znifti_masked]');
-fclose(fid);
-end
-
